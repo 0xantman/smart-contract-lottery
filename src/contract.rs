@@ -277,19 +277,19 @@ pub fn handle_play(
     // reset holders reward
     state.holders_rewards = Uint128::zero();
     // Load combinations
-    let store = query_all_combination(&deps).unwrap();
+    let store = query_all_combination(deps.clone()).unwrap();
 
     /*
         Empty previous winner
     */
     // Get all keys in the bucket winner
-    let keys = winner_storage(deps.storage)
+    let keys = winner_storage(deps.storage.clone())
         .range(None, None, Order::Ascending)
         .flat_map(|item| item.map(|(key, _)| key))
         .collect::<Vec<Vec<u8>>>();
     // Empty winner for the next play
     for x in keys {
-        winner_storage(deps.storage).remove(x.as_ref())
+        winner_storage(deps.storage.clone()).remove(x.as_ref())
     }
 
     // Ensure the sender not sending funds accidentally
@@ -314,7 +314,7 @@ pub fn handle_play(
         .api
         .human_address(&state.terrand_contract_address.clone())?;
     let res = encode_msg_query(msg, terrand_human)?;
-    let res = wrapper_msg_terrand(deps, res)?;
+    let res = wrapper_msg_terrand(deps.clone(), res)?;
 
     let randomness = hex::encode(res.randomness.to_base64());
     let randomness_hash = randomness;
@@ -583,7 +583,7 @@ pub fn handle_public_sale(
     Ok(HandleResponse {
         messages: vec![res_transfer.into()],
         data: None,
-        attributes: vec![attr("action", "public sale"), attr("to"), info.sender.to_string()]
+        attributes: vec![attr("action", "public sale"), attr("to", info.sender.to_string())]
     })
 }
 
@@ -591,7 +591,7 @@ pub fn handle_reward(
     deps: DepsMut,
     env: Env,
     info: MessageInfo
-) ->  Result<HandleResponse, ContractError> {
+) ->  StdResult<HandleResponse> {
     // Load the state
     let mut state = config(deps.storage).load()?;
     if state.safe_lock {
@@ -822,8 +822,8 @@ pub fn handle_jackpot(
     })
 }
 
-pub fn handle_proposal<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle_proposal(
+    deps: DepsMut,
     env: Env,
     info: MessageInfo,
     description: String,
@@ -1027,6 +1027,7 @@ pub fn handle_proposal<S: Storage, A: Api, Q: Querier>(
 pub fn handle_vote(
     deps: DepsMut,
     env: Env,
+    info: MessageInfo,
     poll_id: u64,
     approve: bool,
 ) -> StdResult<HandleResponse>  {
@@ -1363,7 +1364,7 @@ fn query_poll(
     })
 }
 
-fn query_round<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> StdResult<RoundResponse> {
+fn query_round(deps: Deps) -> StdResult<RoundResponse> {
     let state = config_read(&deps.storage).load()?;
     let from_genesis = state.block_time_play - DRAND_GENESIS_TIME;
     let next_round = (from_genesis / DRAND_PERIOD) + DRAND_NEXT_ROUND_SECURITY;
