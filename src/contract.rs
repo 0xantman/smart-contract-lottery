@@ -1,8 +1,6 @@
-use cosmwasm_std::{
-    to_binary, Api, BankMsg, Binary, CanonicalAddr, Coin, CosmosMsg, Decimal, Empty, Env, Extern,
-    HandleResponse, HumanAddr, InitResponse, LogAttribute, Order, Querier, QueryRequest, StdError,
-    StdResult, Storage, Uint128, WasmMsg, WasmQuery,
-};
+use cosmwasm_std::{to_binary, Api, BankMsg, Binary, CanonicalAddr, Coin, CosmosMsg, Decimal,
+                   Empty, Env, HandleResponse, HumanAddr, InitResponse, Order,
+                   Querier, QueryRequest, StdError, StdResult, Storage, Uint128, WasmMsg, WasmQuery, DepsMut, Deps, MessageInfo, attr};
 
 use crate::msg::{
     AllCombinationResponse, AllWinnerResponse, CombinationInfo, ConfigResponse, GetPollResponse,
@@ -27,13 +25,14 @@ const MIN_DESCRIPTION_LEN: u64 = 6;
 // Note, you can use StdResult in some functions where you do not
 // make use of the custom errors
 // #[serde(rename_all = "snake_case")]
-pub fn init<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn init(
+    deps: &mut DepsMut,
     env: Env,
+    info: MessageInfo,
     msg: InitMsg,
 ) -> StdResult<InitResponse> {
     let state = State {
-        admin: deps.api.canonical_address(&env.message.sender)?,
+        admin: deps.api.canonical_address(&info.message.sender)?,
         block_time_play: msg.block_time_play,
         every_block_time_play: msg.every_block_time_play,
         public_sale_end_block: msg.public_sale_end_block,
@@ -57,22 +56,23 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         safe_lock: false,
     };
 
-    config(&mut deps.storage).save(&state)?;
+    config(deps).save(&state)?;
     Ok(InitResponse::default())
 }
 
 // And declare a custom Error variant for the ones where you will want to make use of it
-pub fn handle<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle(
+    deps: DepsMut,
     env: Env,
+    info: MessageInfo,
     msg: HandleMsg,
 ) -> StdResult<HandleResponse> {
     match msg {
-        HandleMsg::Register { combination } => handle_register(deps, env, combination),
-        HandleMsg::Play {} => handle_play(deps, env),
-        HandleMsg::PublicSale {} => handle_public_sale(deps, env),
-        HandleMsg::Reward {} => handle_reward(deps, env),
-        HandleMsg::Jackpot {} => handle_jackpot(deps, env),
+        HandleMsg::Register { combination } => handle_register(deps, env, info, combination),
+        HandleMsg::Play {} => handle_play(deps, env, info),
+        HandleMsg::PublicSale {} => handle_public_sale(deps, env, info),
+        HandleMsg::Reward {} => handle_reward(deps, env, info),
+        HandleMsg::Jackpot {} => handle_jackpot(deps, env, info),
         HandleMsg::Proposal {
             description,
             proposal,
@@ -82,27 +82,29 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         } => handle_proposal(
             deps,
             env,
+            info,
             description,
             proposal,
             amount,
             prize_per_rank,
             contract_migration_address,
         ),
-        HandleMsg::Vote { poll_id, approve } => handle_vote(deps, env, poll_id, approve),
-        HandleMsg::PresentProposal { poll_id } => handle_present_proposal(deps, env, poll_id),
-        HandleMsg::RejectProposal { poll_id } => handle_reject_proposal(deps, env, poll_id),
-        HandleMsg::SafeLock {} => handle_switch(deps, env),
-        HandleMsg::Renounce {} => handle_renounce(deps, env)
+        HandleMsg::Vote { poll_id, approve } => handle_vote(deps, env, info, poll_id, approve),
+        HandleMsg::PresentProposal { poll_id } => handle_present_proposal(deps, env, info, poll_id),
+        HandleMsg::RejectProposal { poll_id } => handle_reject_proposal(deps, env, info, poll_id),
+        HandleMsg::SafeLock {} => handle_switch(deps, env, info),
+        HandleMsg::Renounce {} => handle_renounce(deps, env, info)
     }
 }
 
-pub fn handle_renounce<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle_renounce(
+    deps: DepsMut,
     env: Env,
+    info: MessageInfo,
 ) -> StdResult<HandleResponse> {
     // Load the state
-    let mut state = config(&mut deps.storage).load()?;
-    let sender = deps.api.canonical_address(&env.message.sender)?;
+    let mut state = config(deps.storage).load()?;
+    let sender = deps.api.canonical_address(&info.message.sender)?;
     if state.admin != sender {
         return Err(StdError::Unauthorized { backtrace: None });
     }
@@ -111,23 +113,24 @@ pub fn handle_renounce<S: Storage, A: Api, Q: Querier>(
     }
 
     state.admin = deps.api.canonical_address(&env.contract.address)?;
-    config(&mut deps.storage).save(&state)?;
+    config(deps.storage).save(&state)?;
     Ok(HandleResponse::default())
 }
 
-pub fn handle_switch<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle_switch(
+    deps: DepsMut,
     env: Env,
-) -> StdResult<HandleResponse> {
+    info: MessageInfo,
+) -> Result<HandleResponse, ContractError>{
     // Load the state
-    let mut state = config(&mut deps.storage).load()?;
-    let sender = deps.api.canonical_address(&env.message.sender)?;
+    let mut state = config(deps.storage).load()?;
+    let sender = deps.api.canonical_address(&info.message.sender)?;
     if state.admin != sender {
         return Err(StdError::Unauthorized { backtrace: None });
     }
 
     state.safe_lock = !state.safe_lock;
-    config(&mut deps.storage).save(&state)?;
+    config(deps.storage).save(&state)?;
 
     Ok(HandleResponse::default())
 }
@@ -146,13 +149,14 @@ fn is_lower_hex(combination: &str, len: u8) -> bool {
     true
 }
 
-pub fn handle_register<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle_register(
+    deps: DepsMut,
     env: Env,
+    info: MessageInfo,
     combination: String,
 ) -> StdResult<HandleResponse> {
     // Load the state
-    let state = config(&mut deps.storage).load()?;
+    let state = config(deps.storage).load()?;
     if state.safe_lock {
         return Err(StdError::generic_err(
             "Contract deactivated for preventing security issue found",
@@ -166,15 +170,15 @@ pub fn handle_register<S: Storage, A: Api, Q: Querier>(
         )));
     }
     // Check if some funds are sent
-    let sent = match env.message.sent_funds.len() {
+    let sent = match info.message.sent_funds.len() {
         0 => Err(StdError::generic_err(format!(
             "you need to send {}{} in order to register",
             state.price_per_ticket_to_register.clone(),
             state.denom_stable.clone()
         ))),
         1 => {
-            if env.message.sent_funds[0].denom == state.denom_stable {
-                Ok(env.message.sent_funds[0].amount)
+            if info.message.sent_funds[0].denom == state.denom_stable {
+                Ok(info.message.sent_funds[0].amount)
             } else {
                 Err(StdError::generic_err(format!(
                     "To register you need to send {}{}",
@@ -213,20 +217,20 @@ pub fn handle_register<S: Storage, A: Api, Q: Querier>(
     }
 
     // Save combination and addresses to the bucket
-    match combination_storage(&mut deps.storage).may_load(&combination.as_bytes())? {
+    match combination_storage(deps.storage).may_load(&combination.as_bytes())? {
         Some(c) => {
             let mut combination_in_storage = c;
             combination_in_storage
                 .addresses
-                .push(deps.api.canonical_address(&env.message.sender)?);
-            combination_storage(&mut deps.storage)
+                .push(deps.api.canonical_address(&info.message.sender)?);
+            combination_storage(deps.storage)
                 .save(&combination.as_bytes(), &combination_in_storage)?;
         }
         None => {
-            combination_storage(&mut deps.storage).save(
+            combination_storage(deps.storage).save(
                 &combination.as_bytes(),
                 &Combination {
-                    addresses: vec![deps.api.canonical_address(&env.message.sender)?],
+                    addresses: vec![deps.api.canonical_address(&info.message.sender)?],
                 },
             )?;
         }
@@ -234,11 +238,8 @@ pub fn handle_register<S: Storage, A: Api, Q: Querier>(
 
     Ok(HandleResponse {
         messages: vec![],
-        log: vec![LogAttribute {
-            key: "action".to_string(),
-            value: "register".to_string(),
-        }],
         data: None,
+        attributes: vec![attr("action", "register")]
     })
 }
 
@@ -249,20 +250,21 @@ fn encode_msg_query(msg: QueryMsg, address: HumanAddr) -> StdResult<QueryRequest
     }
     .into())
 }
-fn wrapper_msg_terrand<S: Storage, A: Api, Q: Querier>(
-    deps: &Extern<S, A, Q>,
+fn wrapper_msg_terrand(
+    deps: DepsMut,
     query: QueryRequest<Empty>,
 ) -> StdResult<TerrandResponse> {
     let res: TerrandResponse = deps.querier.query(&query)?;
     Ok(res)
 }
 
-pub fn handle_play<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle_play(
+    deps: DepsMut,
     env: Env,
-) -> StdResult<HandleResponse> {
+    info: MessageInfo
+) -> StdResult<HandleResponse>  {
     // Load the state
-    let mut state = config(&mut deps.storage).load()?;
+    let mut state = config(deps.storage).load()?;
 
     if state.safe_lock {
         return Err(StdError::generic_err(
@@ -281,13 +283,13 @@ pub fn handle_play<S: Storage, A: Api, Q: Querier>(
         Empty previous winner
     */
     // Get all keys in the bucket winner
-    let keys = winner_storage(&mut deps.storage)
+    let keys = winner_storage(deps.storage)
         .range(None, None, Order::Ascending)
         .flat_map(|item| item.map(|(key, _)| key))
         .collect::<Vec<Vec<u8>>>();
     // Empty winner for the next play
     for x in keys {
-        winner_storage(&mut deps.storage).remove(x.as_ref())
+        winner_storage(deps.storage).remove(x.as_ref())
     }
 
     // Ensure the sender not sending funds accidentally
@@ -312,7 +314,7 @@ pub fn handle_play<S: Storage, A: Api, Q: Querier>(
         .api
         .human_address(&state.terrand_contract_address.clone())?;
     let res = encode_msg_query(msg, terrand_human)?;
-    let res = wrapper_msg_terrand(&deps, res)?;
+    let res = wrapper_msg_terrand(deps, res)?;
 
     let randomness = hex::encode(res.randomness.to_base64());
     let randomness_hash = randomness;
@@ -375,7 +377,7 @@ pub fn handle_play<S: Storage, A: Api, Q: Querier>(
                     });
                 }
                 if !data_winner.is_empty() {
-                    winner_storage(&mut deps.storage).save(
+                    winner_storage(deps.storage).save(
                         &1_u8.to_be_bytes(),
                         &Winner {
                             winners: data_winner,
@@ -391,7 +393,7 @@ pub fn handle_play<S: Storage, A: Api, Q: Querier>(
                     });
                 }
                 if !data_winner.is_empty() {
-                    winner_storage(&mut deps.storage).save(
+                    winner_storage(deps.storage).save(
                         &2_u8.to_be_bytes(),
                         &Winner {
                             winners: data_winner,
@@ -407,7 +409,7 @@ pub fn handle_play<S: Storage, A: Api, Q: Querier>(
                     });
                 }
                 if !data_winner.is_empty() {
-                    winner_storage(&mut deps.storage).save(
+                    winner_storage(deps.storage).save(
                         &3_u8.to_be_bytes(),
                         &Winner {
                             winners: data_winner,
@@ -423,7 +425,7 @@ pub fn handle_play<S: Storage, A: Api, Q: Querier>(
                     });
                 }
                 if !data_winner.is_empty() {
-                    winner_storage(&mut deps.storage).save(
+                    winner_storage(deps.storage).save(
                         &4_u8.to_be_bytes(),
                         &Winner {
                             winners: data_winner,
@@ -439,7 +441,7 @@ pub fn handle_play<S: Storage, A: Api, Q: Querier>(
                     });
                 }
                 if !data_winner.is_empty() {
-                    winner_storage(&mut deps.storage).save(
+                    winner_storage(deps.storage).save(
                         &5_u8.to_be_bytes(),
                         &Winner {
                             winners: data_winner,
@@ -464,31 +466,22 @@ pub fn handle_play<S: Storage, A: Api, Q: Querier>(
     state.jackpot_reward = jackpot_after;
 
     // Get all keys in the bucket combination
-    let keys = combination_storage(&mut deps.storage)
+    let keys = combination_storage(deps.storage)
         .range(None, None, Order::Ascending)
         .flat_map(|item| item.map(|(key, _)| key))
         .collect::<Vec<Vec<u8>>>();
     // Empty combination for the next play
     for x in keys {
-        combination_storage(&mut deps.storage).remove(x.as_ref())
+        combination_storage(deps.storage).remove(x.as_ref())
     }
 
     // Save the new state
-    config(&mut deps.storage).save(&state)?;
+    config(deps.storage).save(&state)?;
 
     Ok(HandleResponse {
         messages: vec![msg.into()],
-        log: vec![
-            LogAttribute {
-                key: "action".to_string(),
-                value: "reward".to_string(),
-            },
-            LogAttribute {
-                key: "to".to_string(),
-                value: env.message.sender.to_string(),
-            },
-        ],
         data: None,
+        attributes: vec![attr("action", "reward"), attr("to", info.sender.to_string())]
     })
 }
 
@@ -508,12 +501,13 @@ fn wrapper_msg_loterra<S: Storage, A: Api, Q: Querier>(
     Ok(res)
 }
 
-pub fn handle_public_sale<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle_public_sale(
+    deps: DepsMut,
     env: Env,
-) -> StdResult<HandleResponse> {
+    info: MessageInfo
+) -> StdResult<HandleResponse>{
     // Load the state
-    let mut state = config(&mut deps.storage).load()?;
+    let mut state = config(deps.storage).load()?;
     if state.safe_lock {
         return Err(StdError::generic_err(
             "Contract deactivated for preventing security issue found",
@@ -524,14 +518,14 @@ pub fn handle_public_sale<S: Storage, A: Api, Q: Querier>(
         return Err(StdError::generic_err("Public sale is ended"));
     }
     // Check if some funds are sent
-    let sent = match env.message.sent_funds.len() {
+    let sent = match info.sent_funds.len() {
         0 => Err(StdError::generic_err(format!(
             "Send some {} to participate at public sale",
             state.denom_stable.clone()
         ))),
         1 => {
-            if env.message.sent_funds[0].denom == state.denom_stable {
-                Ok(env.message.sent_funds[0].amount)
+            if info.sent_funds[0].denom == state.denom_stable {
+                Ok(info.sent_funds[0].amount)
             } else {
                 Err(StdError::generic_err(format!(
                     "Only {} is accepted",
@@ -574,7 +568,7 @@ pub fn handle_public_sale<S: Storage, A: Api, Q: Querier>(
     }
 
     let msg_transfer = QueryMsg::Transfer {
-        recipient: env.message.sender.clone(),
+        recipient: info.sender.clone(),
         amount: sent,
     };
     let lottera_human = deps
@@ -584,39 +578,31 @@ pub fn handle_public_sale<S: Storage, A: Api, Q: Querier>(
 
     state.token_holder_supply += sent;
     // Save the new state
-    config(&mut deps.storage).save(&state)?;
+    config(deps.storage).save(&state)?;
 
     Ok(HandleResponse {
         messages: vec![res_transfer.into()],
-        log: vec![
-            LogAttribute {
-                key: "action".to_string(),
-                value: "public sale".to_string(),
-            },
-            LogAttribute {
-                key: "to".to_string(),
-                value: env.message.sender.to_string(),
-            },
-        ],
         data: None,
+        attributes: vec![attr("action", "public sale"), attr("to"), info.sender.to_string()]
     })
 }
 
-pub fn handle_reward<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle_reward(
+    deps: DepsMut,
     env: Env,
-) -> StdResult<HandleResponse> {
+    info: MessageInfo
+) ->  Result<HandleResponse, ContractError> {
     // Load the state
-    let mut state = config(&mut deps.storage).load()?;
+    let mut state = config(deps.storage).load()?;
     if state.safe_lock {
         return Err(StdError::generic_err(
             "Contract deactivated for preventing security issue found",
         ));
     }
     // convert the sender to canonical address
-    let sender = deps.api.canonical_address(&env.message.sender).unwrap();
+    let sender = deps.api.canonical_address(&info.sender).unwrap();
     // Ensure the sender not sending funds accidentally
-    if !env.message.sent_funds.is_empty() {
+    if !info.sent_funds.is_empty() {
         return Err(StdError::generic_err("Do not send funds with reward"));
     }
     if state.token_holder_supply.is_zero() {
@@ -641,7 +627,7 @@ pub fn handle_reward<S: Storage, A: Api, Q: Querier>(
     if state
         .claim_reward
         .iter()
-        .any(|address| deps.api.human_address(address).unwrap() == env.message.sender.clone())
+        .any(|address| deps.api.human_address(address).unwrap() == info.sender.clone())
     {
         return Err(StdError::generic_err("Already claimed"));
     }
@@ -673,7 +659,7 @@ pub fn handle_reward<S: Storage, A: Api, Q: Querier>(
     // Update the holdersReward
     state.holders_rewards = state.holders_rewards.sub(reward).unwrap();
     // Save the new state
-    config(&mut deps.storage).save(&state)?;
+    config(deps.storage).save(&state)?;
 
     let msg = BankMsg::Send {
         from_address: env.contract.address,
@@ -687,37 +673,29 @@ pub fn handle_reward<S: Storage, A: Api, Q: Querier>(
     // Send the claimed tickets
     Ok(HandleResponse {
         messages: vec![msg.into()],
-        log: vec![
-            LogAttribute {
-                key: "action".to_string(),
-                value: "reward".to_string(),
-            },
-            LogAttribute {
-                key: "to".to_string(),
-                value: env.message.sender.to_string(),
-            },
-        ],
         data: None,
+        attributes: vec![attr("action", "reward"), attr("to", info.sender.to_string())]
     })
 }
 
 // Players claim the jackpot
-pub fn handle_jackpot<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle_jackpot(
+    deps: DepsMut,
     env: Env,
+    info: MessageInfo
 ) -> StdResult<HandleResponse> {
     // Load state
-    let state = config(&mut deps.storage).load()?;
+    let state = config(deps.storage).load()?;
     if state.safe_lock {
         return Err(StdError::generic_err(
             "Contract deactivated for preventing security issue found",
         ));
     }
-    let sender_to_canonical = deps.api.canonical_address(&env.message.sender).unwrap();
+    let sender_to_canonical = deps.api.canonical_address(&info.sender).unwrap();
     // Load winners
     let store = query_all_winner(&deps).unwrap();
     // Ensure the sender is not sending funds
-    if !env.message.sent_funds.is_empty() {
+    if !info.sent_funds.is_empty() {
         return Err(StdError::generic_err("Do not send funds with jackpot"));
     }
     // Ensure there is jackpot reward to claim
@@ -733,7 +711,7 @@ pub fn handle_jackpot<S: Storage, A: Api, Q: Querier>(
     let mut win_prize_position: Vec<u8> = vec![];
     for winner in store.winner.clone() {
         for winner_info in winner.winners.clone() {
-            if winner_info.address == deps.api.canonical_address(&env.message.sender).unwrap() {
+            if winner_info.address == deps.api.canonical_address(&info.sender).unwrap() {
                 if winner_info.claimed {
                     return Err(StdError::generic_err("Already claimed"));
                 }
@@ -825,7 +803,7 @@ pub fn handle_jackpot<S: Storage, A: Api, Q: Querier>(
 
     // update the winner to claimed true
     for position in win_prize_position {
-        winner_storage(&mut deps.storage).update::<_>(&position.to_be_bytes(), |winners| {
+        winner_storage(deps.storage).update::<_, E>(&position.to_be_bytes(), |winners| {
             let mut winners_data = winners.unwrap();
             for index in 0..winners_data.winners.clone().len() {
                 if winners_data.winners[index].address == sender_to_canonical {
@@ -839,41 +817,29 @@ pub fn handle_jackpot<S: Storage, A: Api, Q: Querier>(
     // Send the jackpot
     Ok(HandleResponse {
         messages: vec![msg.into()],
-        log: vec![
-            LogAttribute {
-                key: "action".to_string(),
-                value: "jackpot reward".to_string(),
-            },
-            LogAttribute {
-                key: "to".to_string(),
-                value: env.message.sender.to_string(),
-            },
-            LogAttribute {
-                key: "jackpot_prize".to_string(),
-                value: "yes".to_string(),
-            },
-        ],
         data: None,
+        attributes: vec![attr("action", "jackpot reward"), attr("to", info.sender.to_string()), attr("jackpot_prize", "true")]
     })
 }
 
 pub fn handle_proposal<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
+    info: MessageInfo,
     description: String,
     proposal: Proposal,
     amount: Option<Uint128>,
     prize_per_rank: Option<Vec<u8>>,
     contract_migration_address: Option<HumanAddr>,
 ) -> StdResult<HandleResponse> {
-    let mut state = config(&mut deps.storage).load().unwrap();
+    let mut state = config(deps.storage).load().unwrap();
     // Increment and get the new poll id for bucket key
     let poll_id = state.poll_count + 1;
     // Set the new counter
     state.poll_count = poll_id;
 
     //Handle sender is not sending funds
-    if !env.message.sent_funds.is_empty() {
+    if !info.sent_funds.is_empty() {
         return Err(StdError::generic_err("Do not send funds with proposal"));
     }
 
@@ -1010,7 +976,7 @@ pub fn handle_proposal<S: Storage, A: Api, Q: Querier>(
     } else if let Proposal::SecurityMigration = proposal {
         match contract_migration_address {
             Some(migration_address) => {
-                let sender = deps.api.canonical_address(&env.message.sender)?;
+                let sender = deps.api.canonical_address(&info.sender)?;
                 if state.admin != sender {
                     return Err(StdError::Unauthorized { backtrace: None });
                 }
@@ -1029,7 +995,7 @@ pub fn handle_proposal<S: Storage, A: Api, Q: Querier>(
         ));
     };
 
-    let sender_to_canonical = deps.api.canonical_address(&env.message.sender).unwrap();
+    let sender_to_canonical = deps.api.canonical_address(&info.sender).unwrap();
 
     let new_poll = PollInfoState {
         creator: sender_to_canonical,
@@ -1046,46 +1012,29 @@ pub fn handle_proposal<S: Storage, A: Api, Q: Querier>(
     };
 
     // Save poll
-    poll_storage(&mut deps.storage).save(&state.poll_count.to_be_bytes(), &new_poll)?;
+    poll_storage(deps.storage).save(&state.poll_count.to_be_bytes(), &new_poll)?;
 
     // Save state
-    config(&mut deps.storage).save(&state)?;
+    config(deps.storage).save(&state)?;
 
     Ok(HandleResponse {
         messages: vec![],
-        log: vec![
-            LogAttribute {
-                key: "action".to_string(),
-                value: "create a proposal".to_string(),
-            },
-            LogAttribute {
-                key: "proposal_id".to_string(),
-                value: poll_id.to_string(),
-            },
-            LogAttribute {
-                key: "proposal_creator".to_string(),
-                value: env.message.sender.to_string(),
-            },
-            LogAttribute {
-                key: "proposal_creation_result".to_string(),
-                value: "success".to_string(),
-            },
-        ],
         data: None,
+        attributes: vec![attr("action", "create a proposal"), attr("proposal_id", poll_id.to_string()), attr("proposal_creator", info.sender.to_string()), attr("proposal_creation_result", "success")]
     })
 }
 
-pub fn handle_vote<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle_vote(
+    deps: DepsMut,
     env: Env,
     poll_id: u64,
     approve: bool,
-) -> StdResult<HandleResponse> {
-    let store = poll_storage(&mut deps.storage).load(&poll_id.to_be_bytes())?;
-    let sender = deps.api.canonical_address(&env.message.sender).unwrap();
+) -> StdResult<HandleResponse>  {
+    let store = poll_storage(deps.storage).load(&poll_id.to_be_bytes())?;
+    let sender = deps.api.canonical_address(&info.sender).unwrap();
 
     // Ensure the sender not sending funds accidentally
-    if !env.message.sent_funds.is_empty() {
+    if !info.sent_funds.is_empty() {
         return Err(StdError::generic_err("Do not send funds with vote"));
     }
     // Ensure the poll is still valid
@@ -1103,14 +1052,14 @@ pub fn handle_vote<S: Storage, A: Api, Q: Querier>(
 
     match approve {
         true => {
-            poll_storage(&mut deps.storage).update::<_>(&poll_id.to_be_bytes(), |poll| {
+            poll_storage(deps.storage).update::<_, E>(&poll_id.to_be_bytes(), |poll| {
                 let mut poll_data = poll.unwrap();
                 poll_data.yes_voters.push(sender.clone());
                 Ok(poll_data)
             })?;
         }
         false => {
-            poll_storage(&mut deps.storage).update::<_>(&poll_id.to_be_bytes(), |poll| {
+            poll_storage(deps.storage).update::<_, E>(&poll_id.to_be_bytes(), |poll| {
                 let mut poll_data = poll.unwrap();
                 poll_data.no_voters.push(sender.clone());
                 Ok(poll_data)
@@ -1120,31 +1069,19 @@ pub fn handle_vote<S: Storage, A: Api, Q: Querier>(
 
     Ok(HandleResponse {
         messages: vec![],
-        log: vec![
-            LogAttribute {
-                key: "action".to_string(),
-                value: "vote".to_string(),
-            },
-            LogAttribute {
-                key: "proposalId".to_string(),
-                value: poll_id.to_string(),
-            },
-            LogAttribute {
-                key: "voting_result".to_string(),
-                value: "success".to_string(),
-            },
-        ],
         data: None,
+        attributes: vec![attr("action", "vote"), attr("proposal_id",poll_id.to_string()), attr("voting_result", "success")]
     })
 }
 
-pub fn handle_reject_proposal<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle_reject_proposal(
+    deps: DepsMut,
     env: Env,
+    info: MessageInfo,
     poll_id: u64,
-) -> StdResult<HandleResponse> {
-    let store = poll_storage_read(&mut deps.storage).load(&poll_id.to_be_bytes())?;
-    let sender = deps.api.canonical_address(&env.message.sender).unwrap();
+) ->  StdResult<HandleResponse> {
+    let store = poll_storage_read(deps.storage).load(&poll_id.to_be_bytes())?;
+    let sender = deps.api.canonical_address(&info.sender).unwrap();
 
     // Ensure the sender not sending funds accidentally
     if !env.message.sent_funds.is_empty() {
@@ -1161,7 +1098,7 @@ pub fn handle_reject_proposal<S: Storage, A: Api, Q: Querier>(
         return Err(StdError::Unauthorized { backtrace: None });
     }
 
-    poll_storage(&mut deps.storage).update::<_>(&poll_id.to_be_bytes(), |poll| {
+    poll_storage(deps.storage).update::<_, E>(&poll_id.to_be_bytes(), |poll| {
         let mut poll_data = poll.unwrap();
         // Update the status to rejected by the creator
         poll_data.status = PollStatus::RejectedByCreator;
@@ -1172,22 +1109,13 @@ pub fn handle_reject_proposal<S: Storage, A: Api, Q: Querier>(
 
     Ok(HandleResponse {
         messages: vec![],
-        log: vec![
-            LogAttribute {
-                key: "action".to_string(),
-                value: "creator reject the proposal".to_string(),
-            },
-            LogAttribute {
-                key: "proposal_id".to_string(),
-                value: poll_id.to_string(),
-            },
-        ],
         data: None,
+        attributes: vec![attr("action", "creator reject the proposal"), attr("proposal_id", poll_id.to_string())]
     })
 }
 
-fn total_weight<S: Storage, A: Api, Q: Querier>(
-    deps: &Extern<S, A, Q>,
+fn total_weight(
+    deps: DepsMut,
     state: &State,
     addresses: &[CanonicalAddr],
 ) -> Uint128 {
@@ -1213,19 +1141,20 @@ fn total_weight<S: Storage, A: Api, Q: Querier>(
     weight
 }
 
-pub fn handle_present_proposal<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
+pub fn handle_present_proposal(
+    deps: DepsMut,
     env: Env,
+    info: MessageInfo,
     poll_id: u64,
 ) -> StdResult<HandleResponse> {
     // Load storage
-    let mut state = config(&mut deps.storage).load().unwrap();
-    let store = poll_storage_read(&mut deps.storage)
+    let mut state = config(deps.storage).load().unwrap();
+    let store = poll_storage_read(deps.storage)
         .load(&poll_id.to_be_bytes())
         .unwrap();
 
     // Ensure the sender not sending funds accidentally
-    if !env.message.sent_funds.is_empty() {
+    if !info.sent_funds.is_empty() {
         return Err(StdError::generic_err(
             "Do not send funds with present proposal",
         ));
@@ -1239,7 +1168,7 @@ pub fn handle_present_proposal<S: Storage, A: Api, Q: Querier>(
         return Err(StdError::generic_err("Proposal still in progress"));
     }
     // Calculating the weight
-    let yes_weight = total_weight(&deps, &state, &store.yes_voters);
+    let yes_weight = total_weight(deps, &state, &store.yes_voters);
     // let noWeight = total_weight(&deps, &state, &store.no_voters);
 
     // Get the amount
@@ -1251,7 +1180,7 @@ pub fn handle_present_proposal<S: Storage, A: Api, Q: Querier>(
 
     // Reject the proposal
     if final_vote_weight_in_percentage < 60 || store.yes_voters.len() <= store.no_voters.len() {
-        poll_storage(&mut deps.storage).update::<_>(&poll_id.to_be_bytes(), |poll| {
+        poll_storage(deps.storage).update::<_, E>(&poll_id.to_be_bytes(), |poll| {
             let mut poll_data = poll.unwrap();
             // Update the status to rejected
             poll_data.status = PollStatus::Rejected;
@@ -1259,21 +1188,8 @@ pub fn handle_present_proposal<S: Storage, A: Api, Q: Querier>(
         })?;
         return Ok(HandleResponse {
             messages: vec![],
-            log: vec![
-                LogAttribute {
-                    key: "action".to_string(),
-                    value: "present the proposal".to_string(),
-                },
-                LogAttribute {
-                    key: "proposal_id".to_string(),
-                    value: poll_id.to_string(),
-                },
-                LogAttribute {
-                    key: "proposal_result".to_string(),
-                    value: "rejected".to_string(),
-                },
-            ],
             data: None,
+            attributes: vec![attr("action", "present the proposal"), attr("proposal_id", poll_id.to_string()), attr("porposal_result", "rejected")]
         });
     };
 
@@ -1311,8 +1227,8 @@ pub fn handle_present_proposal<S: Storage, A: Api, Q: Querier>(
             };
             return Ok(HandleResponse {
                 messages: vec![msg.into()],
-                log: vec![],
                 data: None,
+                attributes: vec![]
             });
         }
         _ => {
@@ -1321,37 +1237,25 @@ pub fn handle_present_proposal<S: Storage, A: Api, Q: Querier>(
     }
 
     // Save to storage
-    poll_storage(&mut deps.storage).update::<_>(&poll_id.to_be_bytes(), |poll| {
+    poll_storage(deps.storage).update::<_, E>(&poll_id.to_be_bytes(), |poll| {
         let mut poll_data = poll.unwrap();
         // Update the status to passed
         poll_data.status = PollStatus::Passed;
         Ok(poll_data)
     })?;
 
-    config(&mut deps.storage).save(&state)?;
+    config(deps.storage).save(&state)?;
 
     Ok(HandleResponse {
         messages: vec![],
-        log: vec![
-            LogAttribute {
-                key: "action".to_string(),
-                value: "present the proposal".to_string(),
-            },
-            LogAttribute {
-                key: "proposal_id".to_string(),
-                value: poll_id.to_string(),
-            },
-            LogAttribute {
-                key: "proposal_result".to_string(),
-                value: "approved".to_string(),
-            },
-        ],
         data: None,
+        attributes: vec![attr("action", "present the proposal"), attr("proposal_id", poll_id.to_string()), attr("proposal_result", "approved")]
     })
 }
 
-pub fn query<S: Storage, A: Api, Q: Querier>(
-    deps: &Extern<S, A, Q>,
+pub fn query(
+    deps: Deps,
+    _env: Env,
     msg: QueryMsg,
 ) -> StdResult<Binary> {
     let response = match msg {
@@ -1367,33 +1271,33 @@ pub fn query<S: Storage, A: Api, Q: Querier>(
     Ok(response)
 }
 
-fn query_config<S: Storage, A: Api, Q: Querier>(
-    deps: &Extern<S, A, Q>,
+fn query_config(
+    deps: Deps,
 ) -> StdResult<ConfigResponse> {
-    let state = config_read(&deps.storage).load()?;
+    let state = config_read(deps.storage).load()?;
     Ok(state)
 }
 
-fn query_terrand_randomness<S: Storage, A: Api, Q: Querier>(
-    _deps: &Extern<S, A, Q>,
+fn query_terrand_randomness(
+    _deps: Deps,
 ) -> StdResult<StdError> {
     return Err(StdError::Unauthorized { backtrace: None });
 }
-fn query_loterra_balance<S: Storage, A: Api, Q: Querier>(
-    _deps: &Extern<S, A, Q>,
+fn query_loterra_balance(
+    _deps: Deps,
 ) -> StdResult<StdError> {
     return Err(StdError::Unauthorized { backtrace: None });
 }
-fn query_loterra_transfer<S: Storage, A: Api, Q: Querier>(
-    _deps: &Extern<S, A, Q>,
+fn query_loterra_transfer(
+    _deps: Deps,
 ) -> StdResult<StdError> {
     return Err(StdError::Unauthorized { backtrace: None });
 }
 
-fn query_all_combination<S: Storage, A: Api, Q: Querier>(
-    deps: &Extern<S, A, Q>,
+fn query_all_combination(
+    deps: Deps,
 ) -> StdResult<AllCombinationResponse> {
-    let combinations = combination_storage_read(&deps.storage)
+    let combinations = combination_storage_read(deps.storage)
         .range(None, None, Order::Descending)
         .flat_map(|item| {
             item.and_then(|(k, combination)| {
@@ -1416,10 +1320,10 @@ fn vector_as_u8_1_array(vector: Vec<u8>) -> [u8; 1] {
     }
     arr
 }
-fn query_all_winner<S: Storage, A: Api, Q: Querier>(
-    deps: &Extern<S, A, Q>,
+fn query_all_winner(
+    deps: Deps,
 ) -> StdResult<AllWinnerResponse> {
-    let winners = winner_storage_read(&deps.storage)
+    let winners = winner_storage_read(deps.storage)
         .range(None, None, Order::Descending)
         .flat_map(|item| {
             item.and_then(|(k, winner)| {
@@ -1433,19 +1337,16 @@ fn query_all_winner<S: Storage, A: Api, Q: Querier>(
     Ok(AllWinnerResponse { winner: winners })
 }
 
-fn query_poll<S: Storage, A: Api, Q: Querier>(
-    deps: &Extern<S, A, Q>,
+fn query_poll(
+    deps: Deps,
     poll_id: u64,
 ) -> StdResult<GetPollResponse> {
-    let store = poll_storage_read(&deps.storage);
+    let store = poll_storage_read(deps.storage);
 
     let poll = match store.may_load(&poll_id.to_be_bytes())? {
         Some(poll) => Some(poll),
         None => {
-            return Err(StdError::NotFound {
-                kind: "not found".to_string(),
-                backtrace: None,
-            })
+
         }
     }
     .unwrap();

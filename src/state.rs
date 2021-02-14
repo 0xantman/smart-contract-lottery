@@ -38,10 +38,10 @@ pub struct State {
     pub safe_lock: bool,
 }
 
-pub fn config<S: Storage>(storage: &mut S) -> Singleton<S, State> {
+pub fn config(storage: &mut deps) -> Singleton<State> {
     singleton(storage, CONFIG_KEY)
 }
-pub fn config_read<S: Storage>(storage: &S) -> ReadonlySingleton<S, State> {
+pub fn config_read(storage: &deps) -> ReadonlySingleton<State> {
     singleton_read(storage, CONFIG_KEY)
 }
 
@@ -50,12 +50,12 @@ pub struct Combination {
     pub addresses: Vec<CanonicalAddr>,
 }
 
-pub fn combination_storage<T: Storage>(storage: &mut T) -> Bucket<T, Combination> {
-    bucket(COMBINATION_KEY, storage)
+pub fn combination_storage(storage: &mut deps) -> Bucket<Combination> {
+    bucket(storage, COMBINATION_KEY)
 }
 
-pub fn combination_storage_read<T: Storage>(storage: &T) -> ReadonlyBucket<T, Combination> {
-    bucket_read(COMBINATION_KEY, storage)
+pub fn combination_storage_read(storage: &deps) -> ReadonlyBucket<Combination> {
+    bucket_read(storage,COMBINATION_KEY)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -68,12 +68,12 @@ pub struct Winner {
     pub winners: Vec<WinnerInfoState>,
 }
 
-pub fn winner_storage<T: Storage>(storage: &mut T) -> Bucket<T, Winner> {
-    bucket(WINNER_KEY, storage)
+pub fn winner_storage(storage: &mut deps) -> Bucket<Winner> {
+    bucket(storage, WINNER_KEY)
 }
 
-pub fn winner_storage_read<T: Storage>(storage: &T) -> ReadonlyBucket<T, Winner> {
-    bucket_read(WINNER_KEY, storage)
+pub fn winner_storage_read(storage: &deps) -> ReadonlyBucket<Winner> {
+    bucket_read(storage, WINNER_KEY)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -113,10 +113,10 @@ pub struct PollInfoState {
     pub migration_address: Option<HumanAddr>,
 }
 
-pub fn poll_storage<T: Storage>(storage: &mut T) -> Bucket<T, PollInfoState> {
-    bucket(POLL_KEY, storage)
+pub fn poll_storage(storage: &mut T) -> Bucket<PollInfoState> {
+    bucket(storage, POLL_KEY)
 }
 
-pub fn poll_storage_read<T: Storage>(storage: &T) -> ReadonlyBucket<T, PollInfoState> {
-    bucket_read(POLL_KEY, storage)
+pub fn poll_storage_read(storage: &deps) -> ReadonlyBucket<PollInfoState> {
+    bucket_read(storage, POLL_KEY)
 }
